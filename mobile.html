@@ -326,8 +326,8 @@
         </div>
       </div>
       <div class="mt12">
-        <label class="field">Độ đậm gradient đáy ảnh: <span id="gradVal">88%</span></label>
-        <input type="range" id="gradAlpha" min="0" max="255" value="225">
+        <label class="field">Làm tối chân ảnh (0% = giữ nguyên ánh sáng gốc): <span id="gradVal">0%</span></label>
+        <input type="range" id="gradAlpha" min="0" max="255" value="0">
       </div>
     </div>
   </details>
@@ -496,8 +496,17 @@ function badgeFontAndSize(ctx, text, maxWidth) {
 
 function renderTo(canvas, photo, headlineMarkup, opts) {
   const [W, H] = opts.canvasSize;
-  canvas.width = W; canvas.height = H;
+  /* hires: xuất theo độ phân giải ảnh gốc (không nén xuống 1080) — layout vẫn
+     tính trong không gian chuẩn WxH rồi phóng bằng ctx.scale nên chữ luôn sắc nét */
+  let k = 1;
+  if (opts.hires && photo) {
+    const cover = Math.max(W / photo.img.width, H / photo.img.height);
+    k = Math.max(1, Math.min(1 / cover, 3)); // tối đa 3x để file không quá nặng
+  }
+  canvas.width = Math.round(W * k); canvas.height = Math.round(H * k);
   const ctx = canvas.getContext('2d');
+  ctx.scale(k, k);
+  ctx.imageSmoothingQuality = 'high';
 
   if (photo) {
     const img = photo.img;
@@ -888,13 +897,13 @@ let exportDataURL = null;
 function openExportModal() {
   if (state.active < 0) { toast('Tải ảnh lên trước đã 📷'); return; }
   if (!parseMarkup($('headline').value.trim()).length) { toast('Nhập headline trước đã ✍️'); return; }
-  const opts = currentOpts();
-  // render bản chuẩn full-res mới nhất làm ảnh tham chiếu
-  renderTo(previewCanvas, state.photos[state.active], $('headline').value, opts);
-  exportDataURL = previewCanvas.toDataURL('image/jpeg', 0.95);
-  refresh(); // trả preview về trạng thái có khung chọn (nếu đang chọn)
+  const opts = { ...currentOpts(), hires: true };
+  // render ảnh tham chiếu ở độ phân giải theo ảnh gốc (offscreen, không đụng preview)
+  const off = document.createElement('canvas');
+  renderTo(off, state.photos[state.active], $('headline').value, opts);
+  exportDataURL = off.toDataURL('image/jpeg', 0.95);
   $('exportImg').src = exportDataURL;
-  $('exportMeta').textContent = `${opts.canvasSize[0]} × ${opts.canvasSize[1]} · JPG chất lượng 95%`;
+  $('exportMeta').textContent = `${off.width} × ${off.height} · JPG chất lượng 95%`;
   $('iosHint').style.display = IS_IOS ? 'block' : 'none';
   $('exportModal').classList.add('show');
 }
@@ -912,7 +921,7 @@ $('btnBatch').onclick = async () => {
   if (!headlines.length) headlines = [$('headline').value.trim()].filter(Boolean);
   if (!headlines.length) { toast('Nhập ít nhất 1 headline'); return; }
 
-  const opts = currentOpts();
+  const opts = { ...currentOpts(), hires: true };
   const off = document.createElement('canvas');
   const results = [];
   for (let pi = 0; pi < state.photos.length; pi++) {

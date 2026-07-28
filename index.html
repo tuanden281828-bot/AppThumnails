@@ -276,8 +276,8 @@
         </div>
       </div>
       <div class="mt12">
-        <label class="field">Độ đậm gradient đáy ảnh (giúp chữ trắng luôn đọc rõ): <span id="gradVal">88%</span></label>
-        <input type="range" id="gradAlpha" min="0" max="255" value="225">
+        <label class="field">Làm tối chân ảnh (0% = giữ nguyên ánh sáng gốc; tăng lên nếu chữ khó đọc): <span id="gradVal">0%</span></label>
+        <input type="range" id="gradAlpha" min="0" max="255" value="0">
       </div>
     </div>
 
@@ -413,8 +413,17 @@ function badgeFontAndSize(ctx, text, maxWidth) {
 
 function renderTo(canvas, photo, headlineMarkup, opts) {
   const [W, H] = opts.canvasSize;
-  canvas.width = W; canvas.height = H;
+  /* hires: xuất theo độ phân giải ảnh gốc (không nén xuống 1080) — layout vẫn
+     tính trong không gian chuẩn WxH rồi phóng bằng ctx.scale nên chữ luôn sắc nét */
+  let k = 1;
+  if (opts.hires && photo) {
+    const cover = Math.max(W / photo.img.width, H / photo.img.height);
+    k = Math.max(1, Math.min(1 / cover, 3)); // tối đa 3x để file không quá nặng
+  }
+  canvas.width = Math.round(W * k); canvas.height = Math.round(H * k);
   const ctx = canvas.getContext('2d');
+  ctx.scale(k, k);
+  ctx.imageSmoothingQuality = 'high';
 
   /* nền */
   if (photo) {
@@ -664,14 +673,21 @@ function downloadCanvas(canvas, name, type, quality) {
   }, type, quality);
 }
 
+/* xuất offscreen ở độ phân giải theo ảnh gốc (hires), không nén xuống 1080 */
+function renderExportCanvas() {
+  const off = document.createElement('canvas');
+  renderTo(off, state.photos[state.active], $('headline').value, { ...currentOpts(), hires: true });
+  return off;
+}
+
 $('btnDownload').onclick = () => {
   if (state.active < 0) { toast('Tải ảnh lên trước đã 📷'); return; }
-  downloadCanvas(previewCanvas, slugify($('headline').value) + '.jpg', 'image/jpeg', 0.95);
+  downloadCanvas(renderExportCanvas(), slugify($('headline').value) + '.jpg', 'image/jpeg', 0.95);
   toast('Đang tải ảnh JPG…');
 };
 $('btnDownloadPng').onclick = () => {
   if (state.active < 0) { toast('Tải ảnh lên trước đã 📷'); return; }
-  downloadCanvas(previewCanvas, slugify($('headline').value) + '.png', 'image/png');
+  downloadCanvas(renderExportCanvas(), slugify($('headline').value) + '.png', 'image/png');
   toast('Đang tải ảnh PNG…');
 };
 
@@ -682,7 +698,7 @@ $('btnBatch').onclick = async () => {
   if (!headlines.length) headlines = [$('headline').value.trim()].filter(Boolean);
   if (!headlines.length) { toast('Nhập ít nhất 1 headline'); return; }
 
-  const opts = currentOpts();
+  const opts = { ...currentOpts(), hires: true };
   const off = document.createElement('canvas');
   const results = [];
   for (let pi = 0; pi < state.photos.length; pi++) {
