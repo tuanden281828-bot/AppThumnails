@@ -153,6 +153,7 @@
   /* preview pane */
   .preview-pane { position: sticky; top: 90px; }
   .preview-wrap {
+    position: relative;
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 18px; display: flex; flex-direction: column; align-items: center; gap: 14px;
   }
@@ -175,6 +176,29 @@
     border: none; border-radius: 8px; padding: 5px 8px; font-size: 11px; cursor: pointer;
   }
   .gitem .dl:hover { background: var(--neon); color: #111; }
+
+  .layer-toolbar {
+    position: absolute; display: none; gap: 5px; z-index: 20;
+    background: rgba(12,14,17,.88); padding: 4px; border-radius: 12px;
+    border: 1px solid var(--border); backdrop-filter: blur(6px);
+  }
+  .layer-toolbar button {
+    width: 36px; height: 36px; border-radius: 9px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text); font-size: 15px; cursor: pointer;
+  }
+  .layer-toolbar button:hover { border-color: var(--neon); }
+  .layer-toolbar button.danger { color: #ff8080; }
+  .font-menu {
+    position: absolute; z-index: 21; display: none; min-width: 215px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  }
+  .font-menu button {
+    display: block; width: 100%; text-align: left; padding: 9px 12px;
+    background: none; border: none; color: var(--text); font-size: 16px;
+    border-radius: 8px; cursor: pointer;
+  }
+  .font-menu button:hover { background: var(--panel-2); }
 
   .toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
@@ -238,6 +262,25 @@
         <span class="hint" style="margin-top:0">Bọc từ khoá trong <b>**...**</b> để tô neon vàng-chanh</span>
       </div>
       <div class="hint">Headline nên ngắn gọn (≤ 8–9 từ). App tự co chữ để không bao giờ quá 2 dòng, tự chọn điểm ngắt dòng cân đối.</div>
+      <div class="row mt12">
+        <label class="switch"><input type="checkbox" id="outlineOn"> Viền chữ</label>
+        <input type="color" id="outlineColor" value="#000000" title="Màu viền">
+      </div>
+      <div id="outlineRow" class="mt8" style="display:none">
+        <label class="field">Độ dày viền: <span id="outlineVal">6</span>px</label>
+        <input type="range" id="outlineW" min="1" max="16" value="6">
+      </div>
+      <div class="mt12">
+        <label class="field">Cỡ chữ: <span id="fontSizeVal">Tự động</span></label>
+        <div class="row">
+          <input type="range" id="fontSize" min="32" max="120" value="72" style="flex:1">
+          <button class="btn small" id="btnAutoSize">Auto</button>
+        </div>
+      </div>
+      <div class="row mt12">
+        <span class="hint" style="margin-top:0; flex:1">👆 Bấm vào chữ trên ảnh xem trước để hiện khung — kéo để di chuyển; nút trên khung: ⧉ nhân bản · Aa đổi font · ✕ xoá</span>
+        <button class="btn small" id="btnResetPos">↺ Vị trí gốc</button>
+      </div>
 
       <details class="mt12">
         <summary>🪄 Tự trích headline từ bài viết dài</summary>
@@ -298,6 +341,12 @@
   <section class="preview-pane">
     <div class="preview-wrap">
       <canvas id="previewCanvas" width="1080" height="1350"></canvas>
+      <div class="layer-toolbar" id="layerToolbar">
+        <button id="btnDupLayer" title="Nhân bản headline">⧉</button>
+        <button id="btnFontLayer" title="Đổi font chữ" style="font-style:italic">Aa</button>
+        <button id="btnDelLayer" class="danger" title="Xoá headline này">✕</button>
+      </div>
+      <div class="font-menu" id="fontMenu"></div>
       <div class="canvas-meta" id="canvasMeta">1080 × 1350 — xem trước trực tiếp</div>
       <div class="row">
         <button class="btn primary" id="btnDownload">⬇ Tải ảnh JPG</button>
@@ -337,15 +386,39 @@ const FONT = 'LatoBlack';
 
 /* ================= STATE ================= */
 const state = {
-  photos: [],        // {img, name, focusY}
-  active: -1,
-  gallery: [],       // {blobUrl, name}
+  photos: [], active: -1, gallery: [],
+  layers: [{ text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 }],
+  activeLayer: 0,
+  textSelected: false,   // đang hiện khung chọn quanh headline đang chọn
 };
 
 const $ = id => document.getElementById(id);
 const previewCanvas = $('previewCanvas');
+let lastMetas = [];          // khung các headline ở lần render preview gần nhất
 
 /* ================= RENDER ENGINE ================= */
+/* Font headline: Lato nhúng sẵn + các font nghiêng hỗ trợ tiếng Việt (tải từ Google Fonts khi chọn) */
+const FONTS = [
+  { label: 'Lato đậm (gốc)',     family: 'LatoBlack',          weight: '900', style: 'normal', gf: null },
+  { label: 'Lato nghiêng',       family: 'LatoBlack',          weight: '900', style: 'italic', gf: null },
+  { label: 'Be Vietnam nghiêng', family: '"Be Vietnam Pro"',   weight: '800', style: 'italic', gf: 'Be+Vietnam+Pro:ital,wght@1,800' },
+  { label: 'Playfair nghiêng',   family: '"Playfair Display"', weight: '800', style: 'italic', gf: 'Playfair+Display:ital,wght@1,800' },
+  { label: 'Dancing Script',     family: '"Dancing Script"',   weight: '700', style: 'normal', gf: 'Dancing+Script:wght@700' },
+];
+const loadedGF = new Set();
+function fontSpec(f, size) { return `${f.style} ${f.weight} ${size}px ${f.family}, sans-serif`; }
+function ensureFont(idx) {
+  const f = FONTS[idx];
+  if (f.gf && !loadedGF.has(f.gf)) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=' + f.gf + '&display=swap';
+    document.head.appendChild(link);
+    loadedGF.add(f.gf);
+  }
+  return document.fonts.load(fontSpec(f, 72), 'Ăâđêôư nghiêng').catch(() => {});
+}
+
 function parseMarkup(markup) {
   const tokens = [];
   const parts = markup.split(/\*\*(.+?)\*\*/s);
@@ -357,19 +430,18 @@ function parseMarkup(markup) {
   return tokens;
 }
 
-function lineWidth(ctx, tokens, size) {
-  ctx.font = `900 ${size}px ${FONT}, sans-serif`;
+function lineWidth(ctx, tokens, size, font) {
+  ctx.font = fontSpec(font, size);
   return ctx.measureText(tokens.map(t => t[0]).join(' ')).width;
 }
 
-/* Port của _best_fit_lines: font lớn nhất có thể, tối đa 2 dòng, ngắt dòng cân đối */
-function bestFitLines(ctx, tokens, maxWidth) {
+function bestFitLines(ctx, tokens, maxWidth, font) {
   for (let size = SPEC.HEADLINE_FONT_SIZE; size >= SPEC.HEADLINE_MIN_FONT_SIZE; size -= 2) {
-    if (lineWidth(ctx, tokens, size) <= maxWidth) return { size, lines: [tokens] };
+    if (lineWidth(ctx, tokens, size, font) <= maxWidth) return { size, lines: [tokens] };
     let best = null;
     for (let split = 1; split < tokens.length; split++) {
       const l1 = tokens.slice(0, split), l2 = tokens.slice(split);
-      const w1 = lineWidth(ctx, l1, size), w2 = lineWidth(ctx, l2, size);
+      const w1 = lineWidth(ctx, l1, size, font), w2 = lineWidth(ctx, l2, size, font);
       if (w1 <= maxWidth && w2 <= maxWidth) {
         const score = Math.max(w1, w2);
         if (!best || score < best.score) best = { score, lines: [l1, l2] };
@@ -377,28 +449,52 @@ function bestFitLines(ctx, tokens, maxWidth) {
     }
     if (best) return { size, lines: best.lines };
   }
-  // fallback: greedy wrap ở min size
   const size = SPEC.HEADLINE_MIN_FONT_SIZE;
+  return { size, lines: layoutAtSize(ctx, tokens, maxWidth, size, font) };
+}
+
+/* xếp dòng ở 1 cỡ chữ cố định: 1 dòng nếu vừa; không thì ngắt 2 dòng cân đối;
+   không nữa thì xuống dòng tự do */
+function layoutAtSize(ctx, tokens, maxWidth, size, font) {
+  if (lineWidth(ctx, tokens, size, font) <= maxWidth) return [tokens];
+  let best = null;
+  for (let split = 1; split < tokens.length; split++) {
+    const l1 = tokens.slice(0, split), l2 = tokens.slice(split);
+    const w1 = lineWidth(ctx, l1, size, font), w2 = lineWidth(ctx, l2, size, font);
+    if (w1 <= maxWidth && w2 <= maxWidth) {
+      const score = Math.max(w1, w2);
+      if (!best || score < best.score) best = { score, lines: [l1, l2] };
+    }
+  }
+  if (best) return best.lines;
   const lines = []; let cur = [];
   for (const t of tokens) {
     const trial = [...cur, t];
-    if (lineWidth(ctx, trial, size) > maxWidth && cur.length) { lines.push(cur); cur = [t]; }
+    if (lineWidth(ctx, trial, size, font) > maxWidth && cur.length) { lines.push(cur); cur = [t]; }
     else cur = trial;
   }
   if (cur.length) lines.push(cur);
-  return { size, lines };
+  return lines;
 }
 
-function drawLineCentered(ctx, line, size, canvasW, y, accentColor) {
-  ctx.font = `900 ${size}px ${FONT}, sans-serif`;
+function drawLineCentered(ctx, line, size, canvasW, y, accentColor, offsetX, outline, font) {
+  ctx.font = fontSpec(font, size);
   ctx.textBaseline = 'top';
-  const total = lineWidth(ctx, line, size);
-  let x = (canvasW - total) / 2;
+  const total = lineWidth(ctx, line, size, font);
+  const startX = (canvasW - total) / 2 + (offsetX || 0);
+  let x = startX;
   for (const [word, accent] of line) {
+    if (outline) {
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = outline.color;
+      ctx.lineWidth = outline.width;
+      ctx.strokeText(word, x, y);
+    }
     ctx.fillStyle = accent ? accentColor : SPEC.WHITE;
     ctx.fillText(word, x, y);
     x += ctx.measureText(word + ' ').width;
   }
+  return { x: startX, w: total };
 }
 
 function badgeFontAndSize(ctx, text, maxWidth) {
@@ -411,7 +507,10 @@ function badgeFontAndSize(ctx, text, maxWidth) {
   return { size: SPEC.BADGE_MIN_FONT_SIZE, w: ctx.measureText(text).width + 44 };
 }
 
-function renderTo(canvas, photo, headlineMarkup, opts) {
+/* Vẽ toàn bộ: ảnh nền + gradient + MỌI lớp headline + badge.
+   layers: [{text, offsetX, offsetY, manualSize, fontIdx}] — mỗi lớp kéo/đổi font độc lập.
+   Trả về mảng khung chữ (meta) của từng lớp để bắt chạm/kéo. */
+function renderTo(canvas, photo, layers, opts) {
   const [W, H] = opts.canvasSize;
   /* hires: xuất theo độ phân giải ảnh gốc (không nén xuống 1080) — layout vẫn
      tính trong không gian chuẩn WxH rồi phóng bằng ctx.scale nên chữ luôn sắc nét */
@@ -425,9 +524,7 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
   ctx.scale(k, k);
   ctx.imageSmoothingQuality = 'high';
 
-  /* nền */
   if (photo) {
-    // fit cover + focusY
     const img = photo.img;
     const scale = Math.max(W / img.width, H / img.height);
     const nw = img.width * scale, nh = img.height * scale;
@@ -445,7 +542,6 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
     ctx.textAlign = 'left';
   }
 
-  /* gradient đáy — alpha = max * (y/h)^1.5, port từ _add_bottom_gradient */
   const maxAlpha = opts.gradAlpha / 255;
   if (maxAlpha > 0) {
     const gradH = Math.round(H * SPEC.GRAD_RATIO);
@@ -458,7 +554,6 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
     ctx.fillRect(0, H - gradH, W, gradH);
   }
 
-  /* badge đo trước để biết chừa chỗ */
   const badgeText = opts.badgeText.trim();
   const showBadge = opts.showBadge && badgeText.length > 0;
   let badgeH = 0, badgeW = 0, badgeSize = 0;
@@ -468,26 +563,49 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
     badgeH = badgeSize + 26;
   }
 
-  /* headline */
-  const tokens = parseMarkup(headlineMarkup.trim());
-  if (tokens.length) {
-    const maxTextWidth = W - 2 * SPEC.MARGIN;
-    const { size, lines } = bestFitLines(ctx, tokens, maxTextWidth);
-    ctx.font = `900 ${size}px ${FONT}, sans-serif`;
+  const metas = [];
+  const maxTextWidth = W - 2 * SPEC.MARGIN;
+  for (const layer of layers) {
+    const tokens = parseMarkup((layer.text || '').trim());
+    if (!tokens.length) { metas.push(null); continue; }
+    const font = FONTS[layer.fontIdx] || FONTS[0];
+    let size, lines;
+    if (layer.manualSize) {
+      size = layer.manualSize;
+      lines = layoutAtSize(ctx, tokens, maxTextWidth, size, font);
+    } else {
+      ({ size, lines } = bestFitLines(ctx, tokens, maxTextWidth, font));
+    }
+    ctx.font = fontSpec(font, size);
     const m = ctx.measureText('Ag');
     const lineH = (m.fontBoundingBoxAscent && m.fontBoundingBoxDescent)
       ? m.fontBoundingBoxAscent + m.fontBoundingBoxDescent
       : size * 1.2;
     const blockH = lines.length * lineH + (lines.length - 1) * SPEC.LINE_SPACING;
     const bottomReserved = showBadge ? SPEC.MARGIN + badgeH + 34 : SPEC.MARGIN + 10;
-    let y = H - bottomReserved - blockH;
+    const offX = layer.offsetX || 0, offY = layer.offsetY || 0;
+    const startY = H - bottomReserved - blockH + offY;
+    let y = startY, minX = Infinity, maxW = 0;
     for (const line of lines) {
-      drawLineCentered(ctx, line, size, W, y, opts.accent);
+      const drawn = drawLineCentered(ctx, line, size, W, y, opts.accent, offX, opts.outline || null, font);
+      minX = Math.min(minX, drawn.x);
+      maxW = Math.max(maxW, drawn.w);
       y += lineH + SPEC.LINE_SPACING;
     }
+    metas.push({ x: minX, y: startY, w: maxW, h: blockH, baseX: minX - offX, baseY: startY - offY });
   }
 
-  /* badge pill góc dưới phải */
+  /* khung chọn nét đứt quanh lớp đang chọn (chỉ ở preview, không có trong ảnh xuất) */
+  if (opts.frame && metas[opts.frameLayer]) {
+    const tm = metas[opts.frameLayer];
+    ctx.save();
+    ctx.strokeStyle = SPEC.NEON;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([14, 9]);
+    ctx.strokeRect(tm.x - 18, tm.y - 14, tm.w + 36, tm.h + 28);
+    ctx.restore();
+  }
+
   if (showBadge) {
     const bx2 = W - SPEC.MARGIN, by2 = H - SPEC.MARGIN;
     const bx1 = bx2 - badgeW, by1 = by2 - badgeH;
@@ -502,9 +620,10 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
     ctx.fillText(badgeText, bx1 + (badgeW - tw) / 2, by1 + badgeH / 2 + 1);
     ctx.textBaseline = 'top';
   }
+
+  return metas;
 }
 
-/* ================= LIVE PREVIEW ================= */
 function currentOpts() {
   const [w, h] = $('preset').value.split('x').map(Number);
   return {
@@ -513,6 +632,10 @@ function currentOpts() {
     gradAlpha: +$('gradAlpha').value,
     badgeText: $('badgeText').value,
     showBadge: $('showBadge').checked,
+    outline: $('outlineOn').checked
+      ? { color: $('outlineColor').value, width: +$('outlineW').value }
+      : null,
+    frame: false, // ảnh xuất/hàng loạt không bao giờ có khung chọn
   };
 }
 
@@ -523,11 +646,15 @@ function refresh() {
   requestAnimationFrame(() => {
     rafPending = false;
     const photo = state.photos[state.active] || null;
-    const opts = currentOpts();
-    renderTo(previewCanvas, photo, $('headline').value, opts);
+    const opts = { ...currentOpts(), frame: state.textSelected, frameLayer: state.activeLayer };
+    lastMetas = renderTo(previewCanvas, photo, state.layers, opts);
     $('canvasMeta').textContent = `${opts.canvasSize[0]} × ${opts.canvasSize[1]} — xem trước trực tiếp`;
+    positionToolbar();
   });
 }
+
+/* ================= LIVE PREVIEW ================= */
+
 
 /* ================= PHOTOS ================= */
 function addFiles(files) {
@@ -583,6 +710,7 @@ $('focusY').oninput = e => {
 
 /* ================= INPUT BINDINGS ================= */
 ['headline', 'badgeText', 'accentColor', 'preset'].forEach(id => $(id).addEventListener('input', refresh));
+$('headline').addEventListener('input', e => { state.layers[state.activeLayer].text = e.target.value; });
 $('showBadge').addEventListener('change', refresh);
 $('gradAlpha').addEventListener('input', e => {
   $('gradVal').textContent = Math.round(+e.target.value / 255 * 100) + '%';
@@ -590,11 +718,179 @@ $('gradAlpha').addEventListener('input', e => {
 });
 $('btnResetAccent').onclick = () => { $('accentColor').value = SPEC.NEON; refresh(); };
 
+/* ===== viền chữ ===== */
+$('outlineOn').addEventListener('change', () => {
+  $('outlineRow').style.display = $('outlineOn').checked ? '' : 'none';
+  refresh();
+});
+$('outlineColor').addEventListener('input', refresh);
+$('outlineW').addEventListener('input', e => {
+  $('outlineVal').textContent = e.target.value;
+  refresh();
+});
+
+/* ===== cỡ chữ (áp cho headline đang chọn) ===== */
+$('fontSize').addEventListener('input', e => {
+  state.layers[state.activeLayer].manualSize = +e.target.value;
+  $('fontSizeVal').textContent = e.target.value + 'px';
+  refresh();
+});
+$('btnAutoSize').onclick = () => {
+  state.layers[state.activeLayer].manualSize = null;
+  $('fontSizeVal').textContent = 'Tự động';
+  refresh();
+};
+$('btnResetPos').onclick = () => {
+  const l = state.layers[state.activeLayer];
+  l.offsetX = 0; l.offsetY = 0;
+  refresh();
+  toast('Đã đưa chữ về vị trí mặc định');
+};
+
+/* đồng bộ các ô điều khiển theo headline đang chọn */
+function syncLayerUI() {
+  const l = state.layers[state.activeLayer];
+  $('headline').value = l.text;
+  $('fontSize').value = l.manualSize || 72;
+  $('fontSizeVal').textContent = l.manualSize ? l.manualSize + 'px' : 'Tự động';
+}
+
+/* ===== chạm/bấm & kéo headline trên preview ===== */
+function canvasPoint(e) {
+  const r = previewCanvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * previewCanvas.width / r.width,
+    y: (e.clientY - r.top) * previewCanvas.height / r.height,
+  };
+}
+
+let dragging = false, dragStart = null, dragStartOffset = null;
+previewCanvas.style.touchAction = 'none'; // để kéo chữ không bị cuộn trang chen vào
+
+previewCanvas.addEventListener('pointerdown', e => {
+  const p = canvasPoint(e), pad = 28;
+  let hit = -1;
+  for (let i = state.layers.length - 1; i >= 0; i--) { // lớp vẽ sau nằm trên -> ưu tiên
+    const r = lastMetas[i];
+    if (r && p.x >= r.x - pad && p.x <= r.x + r.w + pad && p.y >= r.y - pad && p.y <= r.y + r.h + pad) {
+      hit = i; break;
+    }
+  }
+  if (hit >= 0) {
+    dragging = true;
+    if (state.activeLayer !== hit) { state.activeLayer = hit; syncLayerUI(); }
+    state.textSelected = true;
+    dragStart = p;
+    const l = state.layers[hit];
+    dragStartOffset = { x: l.offsetX, y: l.offsetY };
+    previewCanvas.setPointerCapture(e.pointerId);
+    $('fontMenu').style.display = 'none';
+    refresh();
+  } else if (state.textSelected) {
+    state.textSelected = false;
+    $('fontMenu').style.display = 'none';
+    refresh();
+  }
+});
+
+previewCanvas.addEventListener('pointermove', e => {
+  if (!dragging) return;
+  const r = lastMetas[state.activeLayer];
+  if (!r) return;
+  const p = canvasPoint(e);
+  const W = previewCanvas.width, H = previewCanvas.height;
+  const l = state.layers[state.activeLayer];
+  let nx = dragStartOffset.x + p.x - dragStart.x;
+  let ny = dragStartOffset.y + p.y - dragStart.y;
+  // giữ khối chữ nằm trong ảnh
+  nx = Math.max(16 - r.baseX, Math.min(nx, W - 16 - r.w - r.baseX));
+  ny = Math.max(16 - r.baseY, Math.min(ny, H - 16 - r.h - r.baseY));
+  l.offsetX = nx; l.offsetY = ny;
+  refresh();
+});
+
+['pointerup', 'pointercancel'].forEach(ev =>
+  previewCanvas.addEventListener(ev, () => { dragging = false; })
+);
+
+/* ===== toolbar trên góc khung chọn: ⧉ nhân bản · Aa font · ✕ xoá ===== */
+function positionToolbar() {
+  const tb = $('layerToolbar');
+  const meta = state.textSelected ? lastMetas[state.activeLayer] : null;
+  if (!meta) { tb.style.display = 'none'; $('fontMenu').style.display = 'none'; return; }
+  const cr = previewCanvas.getBoundingClientRect();
+  const wr = previewCanvas.parentElement.getBoundingClientRect();
+  const scaleX = cr.width / previewCanvas.width, scaleY = cr.height / previewCanvas.height;
+  let left = (cr.left - wr.left) + (meta.x + meta.w + 18) * scaleX - 122;
+  let top = (cr.top - wr.top) + (meta.y - 14) * scaleY - 46;
+  left = Math.max(4, Math.min(left, wr.width - 130));
+  top = Math.max(4, top);
+  tb.style.left = left + 'px';
+  tb.style.top = top + 'px';
+  tb.style.display = 'flex';
+}
+
+$('btnDupLayer').onclick = () => {
+  const src = state.layers[state.activeLayer];
+  state.layers.push({ ...src, offsetX: src.offsetX + 44, offsetY: src.offsetY + 44 });
+  state.activeLayer = state.layers.length - 1;
+  syncLayerUI(); refresh();
+  toast('Đã nhân bản headline — kéo để tách vị trí');
+};
+
+$('btnDelLayer').onclick = () => {
+  if (state.layers.length <= 1) {
+    state.layers[0].text = '';
+    syncLayerUI();
+    state.textSelected = false;
+    refresh();
+    return;
+  }
+  state.layers.splice(state.activeLayer, 1);
+  state.activeLayer = Math.min(state.activeLayer, state.layers.length - 1);
+  syncLayerUI(); refresh();
+  toast('Đã xoá headline này');
+};
+
+$('btnFontLayer').onclick = () => {
+  const menu = $('fontMenu');
+  if (menu.style.display === 'block') { menu.style.display = 'none'; return; }
+  buildFontMenu();
+  const tb = $('layerToolbar');
+  menu.style.left = Math.max(4, tb.offsetLeft - 80) + 'px';
+  menu.style.top = (tb.offsetTop + 46) + 'px';
+  menu.style.display = 'block';
+  FONTS.forEach((_, i) => ensureFont(i)); // tải trước để tên font hiện đúng kiểu chữ
+};
+
+function buildFontMenu() {
+  const menu = $('fontMenu');
+  menu.innerHTML = '';
+  FONTS.forEach((f, i) => {
+    const b = document.createElement('button');
+    b.textContent = f.label;
+    b.style.fontFamily = f.family + ', sans-serif';
+    b.style.fontStyle = f.style;
+    b.style.fontWeight = f.weight;
+    if (state.layers[state.activeLayer].fontIdx === i) b.style.color = 'var(--neon)';
+    b.onclick = () => {
+      menu.style.display = 'none';
+      ensureFont(i).then(() => {
+        state.layers[state.activeLayer].fontIdx = i;
+        refresh();
+      });
+    };
+    menu.appendChild(b);
+  });
+}
+
+
 $('btnWrapNeon').onclick = () => {
   const ta = $('headline');
   const { selectionStart: s, selectionEnd: en, value: v } = ta;
   if (s === en) { toast('Bôi đen cụm từ trong ô headline trước đã 👆'); return; }
   ta.value = v.slice(0, s) + '**' + v.slice(s, en) + '**' + v.slice(en);
+  state.layers[state.activeLayer].text = ta.value;
   ta.focus();
   refresh();
 };
@@ -651,7 +947,7 @@ $('btnExtract').onclick = () => {
     div.className = 'suggestion';
     const pretty = headline.replace(/\*\*(.+?)\*\*/g, '<span class="neon">$1</span>');
     div.innerHTML = `<span class="tag">${c.tag}</span>${pretty}`;
-    div.onclick = () => { $('headline').value = headline; refresh(); toast('Đã áp dụng headline — chỉnh lại tuỳ ý'); };
+    div.onclick = () => { $('headline').value = headline; state.layers[state.activeLayer].text = headline; refresh(); toast('Đã áp dụng headline — chỉnh lại tuỳ ý'); };
     box.appendChild(div);
   });
 };
@@ -676,7 +972,7 @@ function downloadCanvas(canvas, name, type, quality) {
 /* xuất offscreen ở độ phân giải theo ảnh gốc (hires), không nén xuống 1080 */
 function renderExportCanvas() {
   const off = document.createElement('canvas');
-  renderTo(off, state.photos[state.active], $('headline').value, { ...currentOpts(), hires: true });
+  renderTo(off, state.photos[state.active], state.layers, { ...currentOpts(), hires: true });
   return off;
 }
 
@@ -699,11 +995,12 @@ $('btnBatch').onclick = async () => {
   if (!headlines.length) { toast('Nhập ít nhất 1 headline'); return; }
 
   const opts = { ...currentOpts(), hires: true };
+  const tmpl = state.layers[state.activeLayer];
   const off = document.createElement('canvas');
   const results = [];
   for (let pi = 0; pi < state.photos.length; pi++) {
     for (let hi = 0; hi < headlines.length; hi++) {
-      renderTo(off, state.photos[pi], headlines[hi], opts);
+      renderTo(off, state.photos[pi], [{ ...tmpl, text: headlines[hi] }], opts);
       const blob = await new Promise(r => off.toBlob(r, 'image/jpeg', 0.95));
       results.push({
         blobUrl: URL.createObjectURL(blob),

@@ -58,6 +58,7 @@
 
   /* preview */
   .preview-wrap {
+    position: relative;
     background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius);
     padding: 12px; display: flex; flex-direction: column; align-items: center; gap: 8px;
     margin-bottom: 12px;
@@ -212,6 +213,29 @@
     background: rgba(255,255,255,.1); color: #fff; border: none; font-size: 16px;
   }
 
+  .layer-toolbar {
+    position: absolute; display: none; gap: 5px; z-index: 20;
+    background: rgba(12,14,17,.88); padding: 4px; border-radius: 12px;
+    border: 1px solid var(--border); backdrop-filter: blur(6px);
+  }
+  .layer-toolbar button {
+    width: 36px; height: 36px; border-radius: 9px; border: 1px solid var(--border);
+    background: var(--panel-2); color: var(--text); font-size: 15px; cursor: pointer;
+  }
+  .layer-toolbar button:hover { border-color: var(--neon); }
+  .layer-toolbar button.danger { color: #ff8080; }
+  .font-menu {
+    position: absolute; z-index: 21; display: none; min-width: 215px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+    padding: 6px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+  }
+  .font-menu button {
+    display: block; width: 100%; text-align: left; padding: 9px 12px;
+    background: none; border: none; color: var(--text); font-size: 16px;
+    border-radius: 8px; cursor: pointer;
+  }
+  .font-menu button:hover { background: var(--panel-2); }
+
   .toast {
     position: fixed; bottom: calc(96px + env(safe-area-inset-bottom)); left: 50%;
     transform: translateX(-50%) translateY(20px);
@@ -239,6 +263,12 @@
   <!-- preview trên cùng, luôn thấy ngay -->
   <div class="preview-wrap">
     <canvas id="previewCanvas" width="1080" height="1350"></canvas>
+      <div class="layer-toolbar" id="layerToolbar">
+        <button id="btnDupLayer" title="Nhân bản headline">⧉</button>
+        <button id="btnFontLayer" title="Đổi font chữ" style="font-style:italic">Aa</button>
+        <button id="btnDelLayer" class="danger" title="Xoá headline này">✕</button>
+      </div>
+      <div class="font-menu" id="fontMenu"></div>
     <div class="canvas-meta" id="canvasMeta">1080 × 1350 — xem trước trực tiếp</div>
   </div>
 
@@ -284,7 +314,7 @@
       </div>
 
       <div class="row mt12">
-        <span class="hint" style="margin-top:0; flex:1">👆 Chạm vào chữ trên ảnh xem trước để hiện khung, giữ và kéo để di chuyển</span>
+        <span class="hint" style="margin-top:0; flex:1">👆 Chạm vào chữ để hiện khung — kéo để di chuyển; nút trên khung: ⧉ nhân bản · Aa đổi font · ✕ xoá</span>
         <button class="btn small" id="btnResetPos">↺ Vị trí gốc</button>
       </div>
       <details class="sub mt12">
@@ -390,15 +420,37 @@ const FONT = 'LatoBlack';
 
 const state = {
   photos: [], active: -1, gallery: [],
-  manualSize: null,          // null = cỡ chữ tự động
-  textOffsetX: 0, textOffsetY: 0,  // độ lệch vị trí chữ do người dùng kéo
-  textSelected: false,       // đang hiện khung chọn quanh chữ
+  layers: [{ text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 }],
+  activeLayer: 0,
+  textSelected: false,   // đang hiện khung chọn quanh headline đang chọn
 };
 const $ = id => document.getElementById(id);
 const previewCanvas = $('previewCanvas');
-let lastTextMeta = null;     // khung chữ ở lần render preview gần nhất (để bắt chạm/kéo)
+let lastMetas = [];          // khung các headline ở lần render preview gần nhất
 
 /* ================= RENDER ENGINE ================= */
+/* Font headline: Lato nhúng sẵn + các font nghiêng hỗ trợ tiếng Việt (tải từ Google Fonts khi chọn) */
+const FONTS = [
+  { label: 'Lato đậm (gốc)',     family: 'LatoBlack',          weight: '900', style: 'normal', gf: null },
+  { label: 'Lato nghiêng',       family: 'LatoBlack',          weight: '900', style: 'italic', gf: null },
+  { label: 'Be Vietnam nghiêng', family: '"Be Vietnam Pro"',   weight: '800', style: 'italic', gf: 'Be+Vietnam+Pro:ital,wght@1,800' },
+  { label: 'Playfair nghiêng',   family: '"Playfair Display"', weight: '800', style: 'italic', gf: 'Playfair+Display:ital,wght@1,800' },
+  { label: 'Dancing Script',     family: '"Dancing Script"',   weight: '700', style: 'normal', gf: 'Dancing+Script:wght@700' },
+];
+const loadedGF = new Set();
+function fontSpec(f, size) { return `${f.style} ${f.weight} ${size}px ${f.family}, sans-serif`; }
+function ensureFont(idx) {
+  const f = FONTS[idx];
+  if (f.gf && !loadedGF.has(f.gf)) {
+    const link = document.createElement('link');
+    link.rel = 'stylesheet';
+    link.href = 'https://fonts.googleapis.com/css2?family=' + f.gf + '&display=swap';
+    document.head.appendChild(link);
+    loadedGF.add(f.gf);
+  }
+  return document.fonts.load(fontSpec(f, 72), 'Ăâđêôư nghiêng').catch(() => {});
+}
+
 function parseMarkup(markup) {
   const tokens = [];
   const parts = markup.split(/\*\*(.+?)\*\*/s);
@@ -410,18 +462,18 @@ function parseMarkup(markup) {
   return tokens;
 }
 
-function lineWidth(ctx, tokens, size) {
-  ctx.font = `900 ${size}px ${FONT}, sans-serif`;
+function lineWidth(ctx, tokens, size, font) {
+  ctx.font = fontSpec(font, size);
   return ctx.measureText(tokens.map(t => t[0]).join(' ')).width;
 }
 
-function bestFitLines(ctx, tokens, maxWidth) {
+function bestFitLines(ctx, tokens, maxWidth, font) {
   for (let size = SPEC.HEADLINE_FONT_SIZE; size >= SPEC.HEADLINE_MIN_FONT_SIZE; size -= 2) {
-    if (lineWidth(ctx, tokens, size) <= maxWidth) return { size, lines: [tokens] };
+    if (lineWidth(ctx, tokens, size, font) <= maxWidth) return { size, lines: [tokens] };
     let best = null;
     for (let split = 1; split < tokens.length; split++) {
       const l1 = tokens.slice(0, split), l2 = tokens.slice(split);
-      const w1 = lineWidth(ctx, l1, size), w2 = lineWidth(ctx, l2, size);
+      const w1 = lineWidth(ctx, l1, size, font), w2 = lineWidth(ctx, l2, size, font);
       if (w1 <= maxWidth && w2 <= maxWidth) {
         const score = Math.max(w1, w2);
         if (!best || score < best.score) best = { score, lines: [l1, l2] };
@@ -430,20 +482,37 @@ function bestFitLines(ctx, tokens, maxWidth) {
     if (best) return { size, lines: best.lines };
   }
   const size = SPEC.HEADLINE_MIN_FONT_SIZE;
+  return { size, lines: layoutAtSize(ctx, tokens, maxWidth, size, font) };
+}
+
+/* xếp dòng ở 1 cỡ chữ cố định: 1 dòng nếu vừa; không thì ngắt 2 dòng cân đối;
+   không nữa thì xuống dòng tự do */
+function layoutAtSize(ctx, tokens, maxWidth, size, font) {
+  if (lineWidth(ctx, tokens, size, font) <= maxWidth) return [tokens];
+  let best = null;
+  for (let split = 1; split < tokens.length; split++) {
+    const l1 = tokens.slice(0, split), l2 = tokens.slice(split);
+    const w1 = lineWidth(ctx, l1, size, font), w2 = lineWidth(ctx, l2, size, font);
+    if (w1 <= maxWidth && w2 <= maxWidth) {
+      const score = Math.max(w1, w2);
+      if (!best || score < best.score) best = { score, lines: [l1, l2] };
+    }
+  }
+  if (best) return best.lines;
   const lines = []; let cur = [];
   for (const t of tokens) {
     const trial = [...cur, t];
-    if (lineWidth(ctx, trial, size) > maxWidth && cur.length) { lines.push(cur); cur = [t]; }
+    if (lineWidth(ctx, trial, size, font) > maxWidth && cur.length) { lines.push(cur); cur = [t]; }
     else cur = trial;
   }
   if (cur.length) lines.push(cur);
-  return { size, lines };
+  return lines;
 }
 
-function drawLineCentered(ctx, line, size, canvasW, y, accentColor, offsetX, outline) {
-  ctx.font = `900 ${size}px ${FONT}, sans-serif`;
+function drawLineCentered(ctx, line, size, canvasW, y, accentColor, offsetX, outline, font) {
+  ctx.font = fontSpec(font, size);
   ctx.textBaseline = 'top';
-  const total = lineWidth(ctx, line, size);
+  const total = lineWidth(ctx, line, size, font);
   const startX = (canvasW - total) / 2 + (offsetX || 0);
   let x = startX;
   for (const [word, accent] of line) {
@@ -460,30 +529,6 @@ function drawLineCentered(ctx, line, size, canvasW, y, accentColor, offsetX, out
   return { x: startX, w: total };
 }
 
-/* xếp dòng ở 1 cỡ chữ cố định (khi người dùng tự chỉnh size):
-   1 dòng nếu vừa; không thì ngắt 2 dòng cân đối; không nữa thì xuống dòng tự do */
-function layoutAtSize(ctx, tokens, maxWidth, size) {
-  if (lineWidth(ctx, tokens, size) <= maxWidth) return [tokens];
-  let best = null;
-  for (let split = 1; split < tokens.length; split++) {
-    const l1 = tokens.slice(0, split), l2 = tokens.slice(split);
-    const w1 = lineWidth(ctx, l1, size), w2 = lineWidth(ctx, l2, size);
-    if (w1 <= maxWidth && w2 <= maxWidth) {
-      const score = Math.max(w1, w2);
-      if (!best || score < best.score) best = { score, lines: [l1, l2] };
-    }
-  }
-  if (best) return best.lines;
-  const lines = []; let cur = [];
-  for (const t of tokens) {
-    const trial = [...cur, t];
-    if (lineWidth(ctx, trial, size) > maxWidth && cur.length) { lines.push(cur); cur = [t]; }
-    else cur = trial;
-  }
-  if (cur.length) lines.push(cur);
-  return lines;
-}
-
 function badgeFontAndSize(ctx, text, maxWidth) {
   for (let size = SPEC.BADGE_FONT_SIZE; size >= SPEC.BADGE_MIN_FONT_SIZE; size -= 2) {
     ctx.font = `900 ${size}px ${FONT}, sans-serif`;
@@ -494,7 +539,10 @@ function badgeFontAndSize(ctx, text, maxWidth) {
   return { size: SPEC.BADGE_MIN_FONT_SIZE, w: ctx.measureText(text).width + 44 };
 }
 
-function renderTo(canvas, photo, headlineMarkup, opts) {
+/* Vẽ toàn bộ: ảnh nền + gradient + MỌI lớp headline + badge.
+   layers: [{text, offsetX, offsetY, manualSize, fontIdx}] — mỗi lớp kéo/đổi font độc lập.
+   Trả về mảng khung chữ (meta) của từng lớp để bắt chạm/kéo. */
+function renderTo(canvas, photo, layers, opts) {
   const [W, H] = opts.canvasSize;
   /* hires: xuất theo độ phân giải ảnh gốc (không nén xuống 1080) — layout vẫn
      tính trong không gian chuẩn WxH rồi phóng bằng ctx.scale nên chữ luôn sắc nét */
@@ -547,46 +595,46 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
     badgeH = badgeSize + 26;
   }
 
-  const tokens = parseMarkup(headlineMarkup.trim());
-  let textMeta = null;
-  if (tokens.length) {
-    const maxTextWidth = W - 2 * SPEC.MARGIN;
+  const metas = [];
+  const maxTextWidth = W - 2 * SPEC.MARGIN;
+  for (const layer of layers) {
+    const tokens = parseMarkup((layer.text || '').trim());
+    if (!tokens.length) { metas.push(null); continue; }
+    const font = FONTS[layer.fontIdx] || FONTS[0];
     let size, lines;
-    if (opts.manualSize) {
-      size = opts.manualSize;
-      lines = layoutAtSize(ctx, tokens, maxTextWidth, size);
+    if (layer.manualSize) {
+      size = layer.manualSize;
+      lines = layoutAtSize(ctx, tokens, maxTextWidth, size, font);
     } else {
-      ({ size, lines } = bestFitLines(ctx, tokens, maxTextWidth));
+      ({ size, lines } = bestFitLines(ctx, tokens, maxTextWidth, font));
     }
-    ctx.font = `900 ${size}px ${FONT}, sans-serif`;
+    ctx.font = fontSpec(font, size);
     const m = ctx.measureText('Ag');
     const lineH = (m.fontBoundingBoxAscent && m.fontBoundingBoxDescent)
       ? m.fontBoundingBoxAscent + m.fontBoundingBoxDescent
       : size * 1.2;
     const blockH = lines.length * lineH + (lines.length - 1) * SPEC.LINE_SPACING;
     const bottomReserved = showBadge ? SPEC.MARGIN + badgeH + 34 : SPEC.MARGIN + 10;
-    const offX = opts.offsetX || 0, offY = opts.offsetY || 0;
+    const offX = layer.offsetX || 0, offY = layer.offsetY || 0;
     const startY = H - bottomReserved - blockH + offY;
     let y = startY, minX = Infinity, maxW = 0;
     for (const line of lines) {
-      const drawn = drawLineCentered(ctx, line, size, W, y, opts.accent, offX, opts.outline || null);
+      const drawn = drawLineCentered(ctx, line, size, W, y, opts.accent, offX, opts.outline || null, font);
       minX = Math.min(minX, drawn.x);
       maxW = Math.max(maxW, drawn.w);
       y += lineH + SPEC.LINE_SPACING;
     }
-    textMeta = {
-      x: minX, y: startY, w: maxW, h: blockH,
-      baseX: minX - offX, baseY: startY - offY,
-    };
+    metas.push({ x: minX, y: startY, w: maxW, h: blockH, baseX: minX - offX, baseY: startY - offY });
   }
 
-  /* khung chọn nét đứt quanh chữ (chỉ hiện ở preview, không có trong ảnh xuất) */
-  if (opts.frame && textMeta) {
+  /* khung chọn nét đứt quanh lớp đang chọn (chỉ ở preview, không có trong ảnh xuất) */
+  if (opts.frame && metas[opts.frameLayer]) {
+    const tm = metas[opts.frameLayer];
     ctx.save();
     ctx.strokeStyle = SPEC.NEON;
     ctx.lineWidth = 3;
     ctx.setLineDash([14, 9]);
-    ctx.strokeRect(textMeta.x - 18, textMeta.y - 14, textMeta.w + 36, textMeta.h + 28);
+    ctx.strokeRect(tm.x - 18, tm.y - 14, tm.w + 36, tm.h + 28);
     ctx.restore();
   }
 
@@ -605,10 +653,9 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
     ctx.textBaseline = 'top';
   }
 
-  return textMeta;
+  return metas;
 }
 
-/* ================= LIVE PREVIEW ================= */
 function currentOpts() {
   const [w, h] = $('preset').value.split('x').map(Number);
   return {
@@ -620,9 +667,6 @@ function currentOpts() {
     outline: $('outlineOn').checked
       ? { color: $('outlineColor').value, width: +$('outlineW').value }
       : null,
-    manualSize: state.manualSize,
-    offsetX: state.textOffsetX,
-    offsetY: state.textOffsetY,
     frame: false, // ảnh xuất/hàng loạt không bao giờ có khung chọn
   };
 }
@@ -634,11 +678,15 @@ function refresh() {
   requestAnimationFrame(() => {
     rafPending = false;
     const photo = state.photos[state.active] || null;
-    const opts = { ...currentOpts(), frame: state.textSelected };
-    lastTextMeta = renderTo(previewCanvas, photo, $('headline').value, opts);
+    const opts = { ...currentOpts(), frame: state.textSelected, frameLayer: state.activeLayer };
+    lastMetas = renderTo(previewCanvas, photo, state.layers, opts);
     $('canvasMeta').textContent = `${opts.canvasSize[0]} × ${opts.canvasSize[1]} — xem trước trực tiếp`;
+    positionToolbar();
   });
 }
+
+/* ================= LIVE PREVIEW ================= */
+
 
 /* ================= PHOTOS ================= */
 function addFiles(files) {
@@ -689,6 +737,7 @@ $('focusY').oninput = e => {
 
 /* ================= INPUT BINDINGS ================= */
 ['headline', 'badgeText', 'accentColor', 'preset'].forEach(id => $(id).addEventListener('input', refresh));
+$('headline').addEventListener('input', e => { state.layers[state.activeLayer].text = e.target.value; });
 $('showBadge').addEventListener('change', refresh);
 $('gradAlpha').addEventListener('input', e => {
   $('gradVal').textContent = Math.round(+e.target.value / 255 * 100) + '%';
@@ -707,25 +756,33 @@ $('outlineW').addEventListener('input', e => {
   refresh();
 });
 
-/* ===== cỡ chữ ===== */
+/* ===== cỡ chữ (áp cho headline đang chọn) ===== */
 $('fontSize').addEventListener('input', e => {
-  state.manualSize = +e.target.value;
+  state.layers[state.activeLayer].manualSize = +e.target.value;
   $('fontSizeVal').textContent = e.target.value + 'px';
   refresh();
 });
 $('btnAutoSize').onclick = () => {
-  state.manualSize = null;
+  state.layers[state.activeLayer].manualSize = null;
   $('fontSizeVal').textContent = 'Tự động';
   refresh();
 };
-
-/* ===== chạm & kéo chữ trên preview ===== */
 $('btnResetPos').onclick = () => {
-  state.textOffsetX = 0; state.textOffsetY = 0;
+  const l = state.layers[state.activeLayer];
+  l.offsetX = 0; l.offsetY = 0;
   refresh();
   toast('Đã đưa chữ về vị trí mặc định');
 };
 
+/* đồng bộ các ô điều khiển theo headline đang chọn */
+function syncLayerUI() {
+  const l = state.layers[state.activeLayer];
+  $('headline').value = l.text;
+  $('fontSize').value = l.manualSize || 72;
+  $('fontSizeVal').textContent = l.manualSize ? l.manualSize + 'px' : 'Tự động';
+}
+
+/* ===== chạm/bấm & kéo headline trên preview ===== */
 function canvasPoint(e) {
   const r = previewCanvas.getBoundingClientRect();
   return {
@@ -738,35 +795,44 @@ let dragging = false, dragStart = null, dragStartOffset = null;
 previewCanvas.style.touchAction = 'none'; // để kéo chữ không bị cuộn trang chen vào
 
 previewCanvas.addEventListener('pointerdown', e => {
-  if (!lastTextMeta) return;
-  const p = canvasPoint(e);
-  const pad = 28;
-  const r = lastTextMeta;
-  if (p.x >= r.x - pad && p.x <= r.x + r.w + pad && p.y >= r.y - pad && p.y <= r.y + r.h + pad) {
+  const p = canvasPoint(e), pad = 28;
+  let hit = -1;
+  for (let i = state.layers.length - 1; i >= 0; i--) { // lớp vẽ sau nằm trên -> ưu tiên
+    const r = lastMetas[i];
+    if (r && p.x >= r.x - pad && p.x <= r.x + r.w + pad && p.y >= r.y - pad && p.y <= r.y + r.h + pad) {
+      hit = i; break;
+    }
+  }
+  if (hit >= 0) {
     dragging = true;
+    if (state.activeLayer !== hit) { state.activeLayer = hit; syncLayerUI(); }
     state.textSelected = true;
     dragStart = p;
-    dragStartOffset = { x: state.textOffsetX, y: state.textOffsetY };
+    const l = state.layers[hit];
+    dragStartOffset = { x: l.offsetX, y: l.offsetY };
     previewCanvas.setPointerCapture(e.pointerId);
+    $('fontMenu').style.display = 'none';
     refresh();
   } else if (state.textSelected) {
     state.textSelected = false;
+    $('fontMenu').style.display = 'none';
     refresh();
   }
 });
 
 previewCanvas.addEventListener('pointermove', e => {
-  if (!dragging || !lastTextMeta) return;
+  if (!dragging) return;
+  const r = lastMetas[state.activeLayer];
+  if (!r) return;
   const p = canvasPoint(e);
   const W = previewCanvas.width, H = previewCanvas.height;
-  const r = lastTextMeta;
+  const l = state.layers[state.activeLayer];
   let nx = dragStartOffset.x + p.x - dragStart.x;
   let ny = dragStartOffset.y + p.y - dragStart.y;
   // giữ khối chữ nằm trong ảnh
   nx = Math.max(16 - r.baseX, Math.min(nx, W - 16 - r.w - r.baseX));
   ny = Math.max(16 - r.baseY, Math.min(ny, H - 16 - r.h - r.baseY));
-  state.textOffsetX = nx;
-  state.textOffsetY = ny;
+  l.offsetX = nx; l.offsetY = ny;
   refresh();
 });
 
@@ -774,11 +840,83 @@ previewCanvas.addEventListener('pointermove', e => {
   previewCanvas.addEventListener(ev, () => { dragging = false; })
 );
 
+/* ===== toolbar trên góc khung chọn: ⧉ nhân bản · Aa font · ✕ xoá ===== */
+function positionToolbar() {
+  const tb = $('layerToolbar');
+  const meta = state.textSelected ? lastMetas[state.activeLayer] : null;
+  if (!meta) { tb.style.display = 'none'; $('fontMenu').style.display = 'none'; return; }
+  const cr = previewCanvas.getBoundingClientRect();
+  const wr = previewCanvas.parentElement.getBoundingClientRect();
+  const scaleX = cr.width / previewCanvas.width, scaleY = cr.height / previewCanvas.height;
+  let left = (cr.left - wr.left) + (meta.x + meta.w + 18) * scaleX - 122;
+  let top = (cr.top - wr.top) + (meta.y - 14) * scaleY - 46;
+  left = Math.max(4, Math.min(left, wr.width - 130));
+  top = Math.max(4, top);
+  tb.style.left = left + 'px';
+  tb.style.top = top + 'px';
+  tb.style.display = 'flex';
+}
+
+$('btnDupLayer').onclick = () => {
+  const src = state.layers[state.activeLayer];
+  state.layers.push({ ...src, offsetX: src.offsetX + 44, offsetY: src.offsetY + 44 });
+  state.activeLayer = state.layers.length - 1;
+  syncLayerUI(); refresh();
+  toast('Đã nhân bản headline — kéo để tách vị trí');
+};
+
+$('btnDelLayer').onclick = () => {
+  if (state.layers.length <= 1) {
+    state.layers[0].text = '';
+    syncLayerUI();
+    state.textSelected = false;
+    refresh();
+    return;
+  }
+  state.layers.splice(state.activeLayer, 1);
+  state.activeLayer = Math.min(state.activeLayer, state.layers.length - 1);
+  syncLayerUI(); refresh();
+  toast('Đã xoá headline này');
+};
+
+$('btnFontLayer').onclick = () => {
+  const menu = $('fontMenu');
+  if (menu.style.display === 'block') { menu.style.display = 'none'; return; }
+  buildFontMenu();
+  const tb = $('layerToolbar');
+  menu.style.left = Math.max(4, tb.offsetLeft - 80) + 'px';
+  menu.style.top = (tb.offsetTop + 46) + 'px';
+  menu.style.display = 'block';
+  FONTS.forEach((_, i) => ensureFont(i)); // tải trước để tên font hiện đúng kiểu chữ
+};
+
+function buildFontMenu() {
+  const menu = $('fontMenu');
+  menu.innerHTML = '';
+  FONTS.forEach((f, i) => {
+    const b = document.createElement('button');
+    b.textContent = f.label;
+    b.style.fontFamily = f.family + ', sans-serif';
+    b.style.fontStyle = f.style;
+    b.style.fontWeight = f.weight;
+    if (state.layers[state.activeLayer].fontIdx === i) b.style.color = 'var(--neon)';
+    b.onclick = () => {
+      menu.style.display = 'none';
+      ensureFont(i).then(() => {
+        state.layers[state.activeLayer].fontIdx = i;
+        refresh();
+      });
+    };
+    menu.appendChild(b);
+  });
+}
+
 $('btnWrapNeon').onclick = () => {
   const ta = $('headline');
   const { selectionStart: s, selectionEnd: en, value: v } = ta;
   if (s === en) { toast('Bôi đen cụm từ trong ô headline trước đã 👆'); return; }
   ta.value = v.slice(0, s) + '**' + v.slice(s, en) + '**' + v.slice(en);
+  state.layers[state.activeLayer].text = ta.value;
   refresh();
 };
 
@@ -832,7 +970,7 @@ $('btnExtract').onclick = () => {
     div.className = 'suggestion';
     const pretty = headline.replace(/\*\*(.+?)\*\*/g, '<span class="neon">$1</span>');
     div.innerHTML = `<span class="tag">${c.tag}</span>${pretty}`;
-    div.onclick = () => { $('headline').value = headline; refresh(); toast('Đã áp dụng headline'); };
+    div.onclick = () => { $('headline').value = headline; state.layers[state.activeLayer].text = headline; refresh(); toast('Đã áp dụng headline'); };
     box.appendChild(div);
   });
 };
@@ -896,11 +1034,11 @@ let exportDataURL = null;
 
 function openExportModal() {
   if (state.active < 0) { toast('Tải ảnh lên trước đã 📷'); return; }
-  if (!parseMarkup($('headline').value.trim()).length) { toast('Nhập headline trước đã ✍️'); return; }
+  if (!state.layers.some(l => parseMarkup((l.text || '').trim()).length)) { toast('Nhập headline trước đã ✍️'); return; }
   const opts = { ...currentOpts(), hires: true };
   // render ảnh tham chiếu ở độ phân giải theo ảnh gốc (offscreen, không đụng preview)
   const off = document.createElement('canvas');
-  renderTo(off, state.photos[state.active], $('headline').value, opts);
+  renderTo(off, state.photos[state.active], state.layers, opts);
   exportDataURL = off.toDataURL('image/jpeg', 0.95);
   $('exportImg').src = exportDataURL;
   $('exportMeta').textContent = `${off.width} × ${off.height} · JPG chất lượng 95%`;
@@ -922,11 +1060,12 @@ $('btnBatch').onclick = async () => {
   if (!headlines.length) { toast('Nhập ít nhất 1 headline'); return; }
 
   const opts = { ...currentOpts(), hires: true };
+  const tmpl = state.layers[state.activeLayer];
   const off = document.createElement('canvas');
   const results = [];
   for (let pi = 0; pi < state.photos.length; pi++) {
     for (let hi = 0; hi < headlines.length; hi++) {
-      renderTo(off, state.photos[pi], headlines[hi], opts);
+      renderTo(off, state.photos[pi], [{ ...tmpl, text: headlines[hi] }], opts);
       results.push({
         dataURL: off.toDataURL('image/jpeg', 0.95),
         name: `anh${pi + 1}-${slugify(headlines[hi])}.jpg`,
