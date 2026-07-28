@@ -265,6 +265,28 @@
       <textarea id="headline" placeholder="Ví dụ: Bạn không cần code để **xây AI agent**" spellcheck="false"></textarea>
       <button class="btn small mt8" id="btnWrapNeon">✨ Tô neon từ đang bôi đen</button>
       <div class="hint">Bọc từ khoá trong <b>**...**</b> để tô neon. Headline ngắn gọn ≤ 8–9 từ, app tự co chữ tối đa 2 dòng.</div>
+
+      <div class="row mt12">
+        <label class="switch"><input type="checkbox" id="outlineOn"> Viền chữ</label>
+        <input type="color" id="outlineColor" value="#000000" title="Màu viền">
+      </div>
+      <div id="outlineRow" class="mt8" style="display:none">
+        <label class="field">Độ dày viền: <span id="outlineVal">6</span>px</label>
+        <input type="range" id="outlineW" min="1" max="16" value="6">
+      </div>
+
+      <div class="mt12">
+        <label class="field">Cỡ chữ: <span id="fontSizeVal">Tự động</span></label>
+        <div class="row">
+          <input type="range" id="fontSize" min="32" max="120" value="72" style="flex:1">
+          <button class="btn small" id="btnAutoSize">Auto</button>
+        </div>
+      </div>
+
+      <div class="row mt12">
+        <span class="hint" style="margin-top:0; flex:1">👆 Chạm vào chữ trên ảnh xem trước để hiện khung, giữ và kéo để di chuyển</span>
+        <button class="btn small" id="btnResetPos">↺ Vị trí gốc</button>
+      </div>
       <details class="sub mt12">
         <summary>🪄 Tự trích headline từ bài viết dài ▾</summary>
         <textarea id="longContent" placeholder="Dán nguyên bài content dài vào đây..." style="min-height:100px"></textarea>
@@ -366,9 +388,15 @@ const SPEC = {
 };
 const FONT = 'LatoBlack';
 
-const state = { photos: [], active: -1, gallery: [] };
+const state = {
+  photos: [], active: -1, gallery: [],
+  manualSize: null,          // null = cỡ chữ tự động
+  textOffsetX: 0, textOffsetY: 0,  // độ lệch vị trí chữ do người dùng kéo
+  textSelected: false,       // đang hiện khung chọn quanh chữ
+};
 const $ = id => document.getElementById(id);
 const previewCanvas = $('previewCanvas');
+let lastTextMeta = null;     // khung chữ ở lần render preview gần nhất (để bắt chạm/kéo)
 
 /* ================= RENDER ENGINE ================= */
 function parseMarkup(markup) {
@@ -412,16 +440,48 @@ function bestFitLines(ctx, tokens, maxWidth) {
   return { size, lines };
 }
 
-function drawLineCentered(ctx, line, size, canvasW, y, accentColor) {
+function drawLineCentered(ctx, line, size, canvasW, y, accentColor, offsetX, outline) {
   ctx.font = `900 ${size}px ${FONT}, sans-serif`;
   ctx.textBaseline = 'top';
   const total = lineWidth(ctx, line, size);
-  let x = (canvasW - total) / 2;
+  const startX = (canvasW - total) / 2 + (offsetX || 0);
+  let x = startX;
   for (const [word, accent] of line) {
+    if (outline) {
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = outline.color;
+      ctx.lineWidth = outline.width;
+      ctx.strokeText(word, x, y);
+    }
     ctx.fillStyle = accent ? accentColor : SPEC.WHITE;
     ctx.fillText(word, x, y);
     x += ctx.measureText(word + ' ').width;
   }
+  return { x: startX, w: total };
+}
+
+/* xếp dòng ở 1 cỡ chữ cố định (khi người dùng tự chỉnh size):
+   1 dòng nếu vừa; không thì ngắt 2 dòng cân đối; không nữa thì xuống dòng tự do */
+function layoutAtSize(ctx, tokens, maxWidth, size) {
+  if (lineWidth(ctx, tokens, size) <= maxWidth) return [tokens];
+  let best = null;
+  for (let split = 1; split < tokens.length; split++) {
+    const l1 = tokens.slice(0, split), l2 = tokens.slice(split);
+    const w1 = lineWidth(ctx, l1, size), w2 = lineWidth(ctx, l2, size);
+    if (w1 <= maxWidth && w2 <= maxWidth) {
+      const score = Math.max(w1, w2);
+      if (!best || score < best.score) best = { score, lines: [l1, l2] };
+    }
+  }
+  if (best) return best.lines;
+  const lines = []; let cur = [];
+  for (const t of tokens) {
+    const trial = [...cur, t];
+    if (lineWidth(ctx, trial, size) > maxWidth && cur.length) { lines.push(cur); cur = [t]; }
+    else cur = trial;
+  }
+  if (cur.length) lines.push(cur);
+  return lines;
 }
 
 function badgeFontAndSize(ctx, text, maxWidth) {
@@ -479,9 +539,16 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
   }
 
   const tokens = parseMarkup(headlineMarkup.trim());
+  let textMeta = null;
   if (tokens.length) {
     const maxTextWidth = W - 2 * SPEC.MARGIN;
-    const { size, lines } = bestFitLines(ctx, tokens, maxTextWidth);
+    let size, lines;
+    if (opts.manualSize) {
+      size = opts.manualSize;
+      lines = layoutAtSize(ctx, tokens, maxTextWidth, size);
+    } else {
+      ({ size, lines } = bestFitLines(ctx, tokens, maxTextWidth));
+    }
     ctx.font = `900 ${size}px ${FONT}, sans-serif`;
     const m = ctx.measureText('Ag');
     const lineH = (m.fontBoundingBoxAscent && m.fontBoundingBoxDescent)
@@ -489,11 +556,29 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
       : size * 1.2;
     const blockH = lines.length * lineH + (lines.length - 1) * SPEC.LINE_SPACING;
     const bottomReserved = showBadge ? SPEC.MARGIN + badgeH + 34 : SPEC.MARGIN + 10;
-    let y = H - bottomReserved - blockH;
+    const offX = opts.offsetX || 0, offY = opts.offsetY || 0;
+    const startY = H - bottomReserved - blockH + offY;
+    let y = startY, minX = Infinity, maxW = 0;
     for (const line of lines) {
-      drawLineCentered(ctx, line, size, W, y, opts.accent);
+      const drawn = drawLineCentered(ctx, line, size, W, y, opts.accent, offX, opts.outline || null);
+      minX = Math.min(minX, drawn.x);
+      maxW = Math.max(maxW, drawn.w);
       y += lineH + SPEC.LINE_SPACING;
     }
+    textMeta = {
+      x: minX, y: startY, w: maxW, h: blockH,
+      baseX: minX - offX, baseY: startY - offY,
+    };
+  }
+
+  /* khung chọn nét đứt quanh chữ (chỉ hiện ở preview, không có trong ảnh xuất) */
+  if (opts.frame && textMeta) {
+    ctx.save();
+    ctx.strokeStyle = SPEC.NEON;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([14, 9]);
+    ctx.strokeRect(textMeta.x - 18, textMeta.y - 14, textMeta.w + 36, textMeta.h + 28);
+    ctx.restore();
   }
 
   if (showBadge) {
@@ -510,6 +595,8 @@ function renderTo(canvas, photo, headlineMarkup, opts) {
     ctx.fillText(badgeText, bx1 + (badgeW - tw) / 2, by1 + badgeH / 2 + 1);
     ctx.textBaseline = 'top';
   }
+
+  return textMeta;
 }
 
 /* ================= LIVE PREVIEW ================= */
@@ -521,6 +608,13 @@ function currentOpts() {
     gradAlpha: +$('gradAlpha').value,
     badgeText: $('badgeText').value,
     showBadge: $('showBadge').checked,
+    outline: $('outlineOn').checked
+      ? { color: $('outlineColor').value, width: +$('outlineW').value }
+      : null,
+    manualSize: state.manualSize,
+    offsetX: state.textOffsetX,
+    offsetY: state.textOffsetY,
+    frame: false, // ảnh xuất/hàng loạt không bao giờ có khung chọn
   };
 }
 
@@ -531,8 +625,8 @@ function refresh() {
   requestAnimationFrame(() => {
     rafPending = false;
     const photo = state.photos[state.active] || null;
-    const opts = currentOpts();
-    renderTo(previewCanvas, photo, $('headline').value, opts);
+    const opts = { ...currentOpts(), frame: state.textSelected };
+    lastTextMeta = renderTo(previewCanvas, photo, $('headline').value, opts);
     $('canvasMeta').textContent = `${opts.canvasSize[0]} × ${opts.canvasSize[1]} — xem trước trực tiếp`;
   });
 }
@@ -592,6 +686,84 @@ $('gradAlpha').addEventListener('input', e => {
   refresh();
 });
 $('btnResetAccent').onclick = () => { $('accentColor').value = SPEC.NEON; refresh(); };
+
+/* ===== viền chữ ===== */
+$('outlineOn').addEventListener('change', () => {
+  $('outlineRow').style.display = $('outlineOn').checked ? '' : 'none';
+  refresh();
+});
+$('outlineColor').addEventListener('input', refresh);
+$('outlineW').addEventListener('input', e => {
+  $('outlineVal').textContent = e.target.value;
+  refresh();
+});
+
+/* ===== cỡ chữ ===== */
+$('fontSize').addEventListener('input', e => {
+  state.manualSize = +e.target.value;
+  $('fontSizeVal').textContent = e.target.value + 'px';
+  refresh();
+});
+$('btnAutoSize').onclick = () => {
+  state.manualSize = null;
+  $('fontSizeVal').textContent = 'Tự động';
+  refresh();
+};
+
+/* ===== chạm & kéo chữ trên preview ===== */
+$('btnResetPos').onclick = () => {
+  state.textOffsetX = 0; state.textOffsetY = 0;
+  refresh();
+  toast('Đã đưa chữ về vị trí mặc định');
+};
+
+function canvasPoint(e) {
+  const r = previewCanvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * previewCanvas.width / r.width,
+    y: (e.clientY - r.top) * previewCanvas.height / r.height,
+  };
+}
+
+let dragging = false, dragStart = null, dragStartOffset = null;
+previewCanvas.style.touchAction = 'none'; // để kéo chữ không bị cuộn trang chen vào
+
+previewCanvas.addEventListener('pointerdown', e => {
+  if (!lastTextMeta) return;
+  const p = canvasPoint(e);
+  const pad = 28;
+  const r = lastTextMeta;
+  if (p.x >= r.x - pad && p.x <= r.x + r.w + pad && p.y >= r.y - pad && p.y <= r.y + r.h + pad) {
+    dragging = true;
+    state.textSelected = true;
+    dragStart = p;
+    dragStartOffset = { x: state.textOffsetX, y: state.textOffsetY };
+    previewCanvas.setPointerCapture(e.pointerId);
+    refresh();
+  } else if (state.textSelected) {
+    state.textSelected = false;
+    refresh();
+  }
+});
+
+previewCanvas.addEventListener('pointermove', e => {
+  if (!dragging || !lastTextMeta) return;
+  const p = canvasPoint(e);
+  const W = previewCanvas.width, H = previewCanvas.height;
+  const r = lastTextMeta;
+  let nx = dragStartOffset.x + p.x - dragStart.x;
+  let ny = dragStartOffset.y + p.y - dragStart.y;
+  // giữ khối chữ nằm trong ảnh
+  nx = Math.max(16 - r.baseX, Math.min(nx, W - 16 - r.w - r.baseX));
+  ny = Math.max(16 - r.baseY, Math.min(ny, H - 16 - r.h - r.baseY));
+  state.textOffsetX = nx;
+  state.textOffsetY = ny;
+  refresh();
+});
+
+['pointerup', 'pointercancel'].forEach(ev =>
+  previewCanvas.addEventListener(ev, () => { dragging = false; })
+);
 
 $('btnWrapNeon').onclick = () => {
   const ta = $('headline');
@@ -720,6 +892,7 @@ function openExportModal() {
   // render bản chuẩn full-res mới nhất làm ảnh tham chiếu
   renderTo(previewCanvas, state.photos[state.active], $('headline').value, opts);
   exportDataURL = previewCanvas.toDataURL('image/jpeg', 0.95);
+  refresh(); // trả preview về trạng thái có khung chọn (nếu đang chọn)
   $('exportImg').src = exportDataURL;
   $('exportMeta').textContent = `${opts.canvasSize[0]} × ${opts.canvasSize[1]} · JPG chất lượng 95%`;
   $('iosHint').style.display = IS_IOS ? 'block' : 'none';
