@@ -200,6 +200,9 @@
   }
   .font-menu button:hover { background: var(--panel-2); }
 
+  .headline-input { min-height: 48px; }
+  .headline-input.active-layer { border-color: var(--neon); box-shadow: 0 0 0 1px rgba(216,255,61,.25); }
+
   .toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
     background: var(--neon); color: #111; font-weight: 700; font-size: 13.5px;
@@ -256,7 +259,12 @@
 
     <div class="card">
       <h2><span class="step-num">2</span> Headline</h2>
-      <textarea id="headline" placeholder="Ví dụ: Bạn không cần code để **xây AI agent**" spellcheck="false"></textarea>
+      <label class="field">Headline 1</label>
+      <textarea class="headline-input active-layer" id="headline0" placeholder="Ví dụ: Bạn không cần code để **xây AI agent**" spellcheck="false"></textarea>
+      <label class="field mt8">Headline 2</label>
+      <textarea class="headline-input" id="headline1" placeholder="Headline thứ 2 (tuỳ chọn) — kéo vị trí, font, cỡ chữ riêng" spellcheck="false"></textarea>
+      <label class="field mt8">Headline 3</label>
+      <textarea class="headline-input" id="headline2" placeholder="Headline thứ 3 (tuỳ chọn)" spellcheck="false"></textarea>
       <div class="row mt8">
         <button class="btn small" id="btnWrapNeon">✨ Tô neon từ đang bôi đen</button>
         <span class="hint" style="margin-top:0">Bọc từ khoá trong <b>**...**</b> để tô neon vàng-chanh</span>
@@ -387,7 +395,11 @@ const FONT = 'LatoBlack';
 /* ================= STATE ================= */
 const state = {
   photos: [], active: -1, gallery: [],
-  layers: [{ text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 }],
+  layers: [
+    { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 },
+    { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 },
+    { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 },
+  ],
   activeLayer: 0,
   textSelected: false,   // đang hiện khung chọn quanh headline đang chọn
 };
@@ -709,8 +721,20 @@ $('focusY').oninput = e => {
 };
 
 /* ================= INPUT BINDINGS ================= */
-['headline', 'badgeText', 'accentColor', 'preset'].forEach(id => $(id).addEventListener('input', refresh));
-$('headline').addEventListener('input', e => { state.layers[state.activeLayer].text = e.target.value; });
+['badgeText', 'accentColor', 'preset'].forEach(id => $(id).addEventListener('input', refresh));
+/* 3 ô Headline — mỗi ô điều khiển 1 lớp; ô đang focus là lớp đang chọn */
+const headlineInputs = [0, 1, 2].map(i => $('headline' + i));
+headlineInputs.forEach((ta, i) => {
+  ta.addEventListener('input', () => { state.layers[i].text = ta.value; refresh(); });
+  ta.addEventListener('focus', () => { setActiveLayer(i); });
+});
+function setActiveLayer(i) {
+  state.activeLayer = i;
+  headlineInputs.forEach((ta, j) => ta.classList.toggle('active-layer', j === i));
+  const l = state.layers[i];
+  $('fontSize').value = l.manualSize || 72;
+  $('fontSizeVal').textContent = l.manualSize ? l.manualSize + 'px' : 'Tự động';
+}
 $('showBadge').addEventListener('change', refresh);
 $('gradAlpha').addEventListener('input', e => {
   $('gradVal').textContent = Math.round(+e.target.value / 255 * 100) + '%';
@@ -749,10 +773,8 @@ $('btnResetPos').onclick = () => {
 
 /* đồng bộ các ô điều khiển theo headline đang chọn */
 function syncLayerUI() {
-  const l = state.layers[state.activeLayer];
-  $('headline').value = l.text;
-  $('fontSize').value = l.manualSize || 72;
-  $('fontSizeVal').textContent = l.manualSize ? l.manualSize + 'px' : 'Tự động';
+  state.layers.forEach((l, i) => { $('headline' + i).value = l.text; });
+  setActiveLayer(state.activeLayer);
 }
 
 /* ===== chạm/bấm & kéo headline trên preview ===== */
@@ -832,24 +854,19 @@ function positionToolbar() {
 
 $('btnDupLayer').onclick = () => {
   const src = state.layers[state.activeLayer];
-  state.layers.push({ ...src, offsetX: src.offsetX + 44, offsetY: src.offsetY + 44 });
-  state.activeLayer = state.layers.length - 1;
+  const free = state.layers.findIndex(l => !(l.text || '').trim());
+  if (free === -1) { toast('Đã đủ 3 headline — xoá bớt để nhân bản'); return; }
+  state.layers[free] = { ...src, offsetX: src.offsetX + 44, offsetY: src.offsetY + 44 };
+  state.activeLayer = free;
   syncLayerUI(); refresh();
-  toast('Đã nhân bản headline — kéo để tách vị trí');
+  toast('Đã nhân bản sang Headline ' + (free + 1));
 };
 
 $('btnDelLayer').onclick = () => {
-  if (state.layers.length <= 1) {
-    state.layers[0].text = '';
-    syncLayerUI();
-    state.textSelected = false;
-    refresh();
-    return;
-  }
-  state.layers.splice(state.activeLayer, 1);
-  state.activeLayer = Math.min(state.activeLayer, state.layers.length - 1);
+  state.layers[state.activeLayer] = { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 };
+  state.textSelected = false;
   syncLayerUI(); refresh();
-  toast('Đã xoá headline này');
+  toast('Đã xoá Headline ' + (state.activeLayer + 1));
 };
 
 $('btnFontLayer').onclick = () => {
@@ -886,7 +903,7 @@ function buildFontMenu() {
 
 
 $('btnWrapNeon').onclick = () => {
-  const ta = $('headline');
+  const ta = $('headline' + state.activeLayer);
   const { selectionStart: s, selectionEnd: en, value: v } = ta;
   if (s === en) { toast('Bôi đen cụm từ trong ô headline trước đã 👆'); return; }
   ta.value = v.slice(0, s) + '**' + v.slice(s, en) + '**' + v.slice(en);
@@ -947,7 +964,7 @@ $('btnExtract').onclick = () => {
     div.className = 'suggestion';
     const pretty = headline.replace(/\*\*(.+?)\*\*/g, '<span class="neon">$1</span>');
     div.innerHTML = `<span class="tag">${c.tag}</span>${pretty}`;
-    div.onclick = () => { $('headline').value = headline; state.layers[state.activeLayer].text = headline; refresh(); toast('Đã áp dụng headline — chỉnh lại tuỳ ý'); };
+    div.onclick = () => { $('headline' + state.activeLayer).value = headline; state.layers[state.activeLayer].text = headline; refresh(); toast('Đã áp dụng vào Headline ' + (state.activeLayer + 1)); };
     box.appendChild(div);
   });
 };
@@ -978,12 +995,12 @@ function renderExportCanvas() {
 
 $('btnDownload').onclick = () => {
   if (state.active < 0) { toast('Tải ảnh lên trước đã 📷'); return; }
-  downloadCanvas(renderExportCanvas(), slugify($('headline').value) + '.jpg', 'image/jpeg', 0.95);
+  downloadCanvas(renderExportCanvas(), slugify(state.layers[state.activeLayer].text) + '.jpg', 'image/jpeg', 0.95);
   toast('Đang tải ảnh JPG…');
 };
 $('btnDownloadPng').onclick = () => {
   if (state.active < 0) { toast('Tải ảnh lên trước đã 📷'); return; }
-  downloadCanvas(renderExportCanvas(), slugify($('headline').value) + '.png', 'image/png');
+  downloadCanvas(renderExportCanvas(), slugify(state.layers[state.activeLayer].text) + '.png', 'image/png');
   toast('Đang tải ảnh PNG…');
 };
 
@@ -991,7 +1008,7 @@ $('btnDownloadPng').onclick = () => {
 $('btnBatch').onclick = async () => {
   if (!state.photos.length) { toast('Tải ít nhất 1 ảnh lên trước đã 📷'); return; }
   let headlines = $('variants').value.split('\n').map(s => s.trim()).filter(Boolean);
-  if (!headlines.length) headlines = [$('headline').value.trim()].filter(Boolean);
+  if (!headlines.length) headlines = [(state.layers[state.activeLayer].text || '').trim()].filter(Boolean);
   if (!headlines.length) { toast('Nhập ít nhất 1 headline'); return; }
 
   const opts = { ...currentOpts(), hires: true };
