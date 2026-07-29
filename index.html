@@ -258,7 +258,33 @@
     </div>
 
     <div class="card">
-      <h2><span class="step-num">2</span> Headline</h2>
+      <h2><span class="step-num">2</span> Tuỳ chỉnh</h2>
+      <div class="grid2">
+        <div>
+          <label class="field">Kích thước</label>
+          <select id="preset">
+            <option value="1080x1350" selected>4:5 — 1080×1350 (FB/IG feed)</option>
+            <option value="1080x1080">1:1 — 1080×1080 (vuông)</option>
+            <option value="1080x1920">9:16 — 1080×1920 (Story/Reels)</option>
+            <option value="1920x1080">16:9 — 1920×1080 (YouTube/ngang)</option>
+          </select>
+        </div>
+        <div>
+          <label class="field">Màu từ khoá neon</label>
+          <div class="row">
+            <input type="color" id="accentColor" value="#D8FF3D">
+            <button class="btn small" id="btnResetAccent" title="Về màu brand gốc">↺</button>
+          </div>
+        </div>
+      </div>
+      <div class="mt12">
+        <label class="field">Làm tối chân ảnh (0% = giữ nguyên ánh sáng gốc; tăng lên nếu chữ khó đọc): <span id="gradVal">0%</span></label>
+        <input type="range" id="gradAlpha" min="0" max="255" value="0">
+      </div>
+    </div>
+
+    <div class="card">
+      <h2><span class="step-num">3</span> Headline</h2>
       <label class="field">Headline 1</label>
       <textarea class="headline-input active-layer" id="headline0" placeholder="Ví dụ: Bạn không cần code để **xây AI agent**" spellcheck="false"></textarea>
       <label class="field mt8">Headline 2</label>
@@ -299,36 +325,10 @@
     </div>
 
     <div class="card">
-      <h2><span class="step-num">3</span> Badge thương hiệu</h2>
+      <h2><span class="step-num">4</span> Badge thương hiệu</h2>
       <div class="row">
         <input type="text" id="badgeText" value="tuanden.top" style="flex:1">
         <label class="switch"><input type="checkbox" id="showBadge" checked> Hiện</label>
-      </div>
-    </div>
-
-    <div class="card">
-      <h2><span class="step-num">4</span> Tuỳ chỉnh</h2>
-      <div class="grid2">
-        <div>
-          <label class="field">Kích thước</label>
-          <select id="preset">
-            <option value="1080x1350" selected>4:5 — 1080×1350 (FB/IG feed)</option>
-            <option value="1080x1080">1:1 — 1080×1080 (vuông)</option>
-            <option value="1080x1920">9:16 — 1080×1920 (Story/Reels)</option>
-            <option value="1920x1080">16:9 — 1920×1080 (YouTube/ngang)</option>
-          </select>
-        </div>
-        <div>
-          <label class="field">Màu từ khoá neon</label>
-          <div class="row">
-            <input type="color" id="accentColor" value="#D8FF3D">
-            <button class="btn small" id="btnResetAccent" title="Về màu brand gốc">↺</button>
-          </div>
-        </div>
-      </div>
-      <div class="mt12">
-        <label class="field">Làm tối chân ảnh (0% = giữ nguyên ánh sáng gốc; tăng lên nếu chữ khó đọc): <span id="gradVal">0%</span></label>
-        <input type="range" id="gradAlpha" min="0" max="255" value="0">
       </div>
     </div>
 
