@@ -203,6 +203,11 @@
   .headline-input { min-height: 48px; }
   .headline-input.active-layer { border-color: var(--neon); box-shadow: 0 0 0 1px rgba(216,255,61,.25); }
 
+  .layer-toolbar input[type=color] {
+    width: 36px; height: 36px; padding: 2px; border-radius: 9px;
+    border: 1px solid var(--border); background: var(--panel-2); cursor: pointer;
+  }
+
   .toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
     background: var(--neon); color: #111; font-weight: 700; font-size: 13.5px;
@@ -252,8 +257,10 @@
       <input type="file" id="fileInput" accept="image/*" multiple hidden>
       <div class="thumbs" id="thumbs"></div>
       <div id="focusRow" class="mt12" style="display:none">
-        <label class="field">Vị trí crop dọc (kéo để canh khuôn mặt / chủ thể)</label>
+        <label class="field">Vị trí crop dọc (áp dụng cho tất cả ảnh)</label>
         <input type="range" id="focusY" min="0" max="100" value="50">
+        <label class="field mt8">Vị trí crop ngang (áp dụng cho tất cả ảnh)</label>
+        <input type="range" id="focusX" min="0" max="100" value="50">
       </div>
     </div>
 
@@ -307,7 +314,7 @@
       <div class="mt12">
         <label class="field">Cỡ chữ: <span id="fontSizeVal">Tự động</span></label>
         <div class="row">
-          <input type="range" id="fontSize" min="32" max="120" value="72" style="flex:1">
+          <input type="range" id="fontSize" min="32" max="220" value="72" style="flex:1">
           <button class="btn small" id="btnAutoSize">Auto</button>
         </div>
       </div>
@@ -352,6 +359,7 @@
       <div class="layer-toolbar" id="layerToolbar">
         <button id="btnDupLayer" title="Nhân bản headline">⧉</button>
         <button id="btnFontLayer" title="Đổi font chữ" style="font-style:italic">Aa</button>
+        <input type="color" id="layerColor" title="Màu chữ của headline này" value="#ffffff">
         <button id="btnDelLayer" class="danger" title="Xoá headline này">✕</button>
       </div>
       <div class="font-menu" id="fontMenu"></div>
@@ -396,9 +404,9 @@ const FONT = 'LatoBlack';
 const state = {
   photos: [], active: -1, gallery: [],
   layers: [
-    { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 },
-    { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 },
-    { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 },
+    { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0, scaleX: 1, color: '' },
+    { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0, scaleX: 1, color: '' },
+    { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0, scaleX: 1, color: '' },
   ],
   activeLayer: 0,
   textSelected: false,   // đang hiện khung chọn quanh headline đang chọn
@@ -489,12 +497,17 @@ function layoutAtSize(ctx, tokens, maxWidth, size, font) {
   return lines;
 }
 
-function drawLineCentered(ctx, line, size, canvasW, y, accentColor, offsetX, outline, font) {
+function drawLineCentered(ctx, line, size, canvasW, y, accentColor, offsetX, outline, font, sx, baseColor) {
+  sx = sx || 1;
   ctx.font = fontSpec(font, size);
   ctx.textBaseline = 'top';
   const total = lineWidth(ctx, line, size, font);
-  const startX = (canvasW - total) / 2 + (offsetX || 0);
-  let x = startX;
+  const drawnW = total * sx;
+  const startX = (canvasW - drawnW) / 2 + (offsetX || 0);
+  /* scale ngang bằng transform: sx < 1 = ép chữ ốm lại, sx > 1 = giãn rộng */
+  ctx.save();
+  ctx.scale(sx, 1);
+  let x = startX / sx;
   for (const [word, accent] of line) {
     if (outline) {
       ctx.lineJoin = 'round';
@@ -502,11 +515,12 @@ function drawLineCentered(ctx, line, size, canvasW, y, accentColor, offsetX, out
       ctx.lineWidth = outline.width;
       ctx.strokeText(word, x, y);
     }
-    ctx.fillStyle = accent ? accentColor : SPEC.WHITE;
+    ctx.fillStyle = accent ? accentColor : (baseColor || SPEC.WHITE);
     ctx.fillText(word, x, y);
     x += ctx.measureText(word + ' ').width;
   }
-  return { x: startX, w: total };
+  ctx.restore();
+  return { x: startX, w: drawnW };
 }
 
 function badgeFontAndSize(ctx, text, maxWidth) {
@@ -540,8 +554,8 @@ function renderTo(canvas, photo, layers, opts) {
     const img = photo.img;
     const scale = Math.max(W / img.width, H / img.height);
     const nw = img.width * scale, nh = img.height * scale;
-    const left = (nw - W) / 2;
-    const top = (nh - H) * (photo.focusY ?? 0.5);
+    const left = (nw - W) * (opts.focusX ?? 0.5);
+    const top = (nh - H) * (opts.focusY ?? photo.focusY ?? 0.5);
     ctx.drawImage(img, -left, -top, nw, nh);
   } else {
     const g = ctx.createLinearGradient(0, 0, W, H);
@@ -581,12 +595,14 @@ function renderTo(canvas, photo, layers, opts) {
     const tokens = parseMarkup((layer.text || '').trim());
     if (!tokens.length) { metas.push(null); continue; }
     const font = FONTS[layer.fontIdx] || FONTS[0];
+    const sx = layer.scaleX || 1;
+    const availW = maxTextWidth / sx; /* chữ bị ép ngang thì được xếp rộng hơn -> vẽ ra vẫn vừa ảnh, không mất chữ */
     let size, lines;
     if (layer.manualSize) {
       size = layer.manualSize;
-      lines = layoutAtSize(ctx, tokens, maxTextWidth, size, font);
+      lines = layoutAtSize(ctx, tokens, availW, size, font);
     } else {
-      ({ size, lines } = bestFitLines(ctx, tokens, maxTextWidth, font));
+      ({ size, lines } = bestFitLines(ctx, tokens, availW, font));
     }
     ctx.font = fontSpec(font, size);
     const m = ctx.measureText('Ag');
@@ -599,22 +615,38 @@ function renderTo(canvas, photo, layers, opts) {
     const startY = H - bottomReserved - blockH + offY;
     let y = startY, minX = Infinity, maxW = 0;
     for (const line of lines) {
-      const drawn = drawLineCentered(ctx, line, size, W, y, opts.accent, offX, opts.outline || null, font);
+      const drawn = drawLineCentered(ctx, line, size, W, y, opts.accent, offX, opts.outline || null, font, sx, layer.color || null);
       minX = Math.min(minX, drawn.x);
       maxW = Math.max(maxW, drawn.w);
       y += lineH + SPEC.LINE_SPACING;
     }
-    metas.push({ x: minX, y: startY, w: maxW, h: blockH, baseX: minX - offX, baseY: startY - offY });
+    metas.push({ x: minX, y: startY, w: maxW, h: blockH, baseX: minX - offX, baseY: startY - offY, size, scaleX: sx });
   }
 
   /* khung chọn nét đứt quanh lớp đang chọn (chỉ ở preview, không có trong ảnh xuất) */
   if (opts.frame && metas[opts.frameLayer]) {
     const tm = metas[opts.frameLayer];
+    const ffx = tm.x - 18, ffy = tm.y - 14, ffw = tm.w + 36, ffh = tm.h + 28;
     ctx.save();
     ctx.strokeStyle = SPEC.NEON;
     ctx.lineWidth = 3;
     ctx.setLineDash([14, 9]);
-    ctx.strokeRect(tm.x - 18, tm.y - 14, tm.w + 36, tm.h + 28);
+    ctx.strokeRect(ffx, ffy, ffw, ffh);
+    /* 8 chấm co giãn: 4 góc = phóng to/thu nhỏ, 2 cạnh ngang = ép/giãn bề ngang, 2 cạnh dọc = tăng/giảm chiều cao */
+    ctx.setLineDash([]);
+    for (const [hx, hy] of [
+      [ffx, ffy], [ffx + ffw / 2, ffy], [ffx + ffw, ffy],
+      [ffx, ffy + ffh / 2], [ffx + ffw, ffy + ffh / 2],
+      [ffx, ffy + ffh], [ffx + ffw / 2, ffy + ffh], [ffx + ffw, ffy + ffh],
+    ]) {
+      ctx.beginPath();
+      ctx.arc(hx, hy, 10, 0, Math.PI * 2);
+      ctx.fillStyle = SPEC.NEON;
+      ctx.fill();
+      ctx.strokeStyle = '#14171c';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
     ctx.restore();
   }
 
@@ -644,6 +676,8 @@ function currentOpts() {
     gradAlpha: +$('gradAlpha').value,
     badgeText: $('badgeText').value,
     showBadge: $('showBadge').checked,
+    focusY: +$('focusY').value / 100,
+    focusX: +$('focusX').value / 100,
     outline: $('outlineOn').checked
       ? { color: $('outlineColor').value, width: +$('outlineW').value }
       : null,
@@ -699,7 +733,7 @@ function renderThumbs() {
       renderThumbs(); refresh();
     };
     d.appendChild(del);
-    d.onclick = () => { state.active = i; $('focusY').value = Math.round(p.focusY * 100); renderThumbs(); refresh(); };
+    d.onclick = () => { state.active = i; renderThumbs(); refresh(); };
     wrap.appendChild(d);
   });
   $('focusRow').style.display = state.active >= 0 ? '' : 'none';
@@ -715,10 +749,8 @@ document.addEventListener('paste', e => {
   if (e.clipboardData?.files?.length) addFiles(e.clipboardData.files);
 });
 
-$('focusY').oninput = e => {
-  const p = state.photos[state.active];
-  if (p) { p.focusY = +e.target.value / 100; refresh(); }
-};
+$('focusY').addEventListener('input', refresh);
+$('focusX').addEventListener('input', refresh);
 
 /* ================= INPUT BINDINGS ================= */
 ['badgeText', 'accentColor', 'preset'].forEach(id => $(id).addEventListener('input', refresh));
@@ -734,6 +766,7 @@ function setActiveLayer(i) {
   const l = state.layers[i];
   $('fontSize').value = l.manualSize || 72;
   $('fontSizeVal').textContent = l.manualSize ? l.manualSize + 'px' : 'Tự động';
+  $('layerColor').value = l.color || '#ffffff';
 }
 $('showBadge').addEventListener('change', refresh);
 $('gradAlpha').addEventListener('input', e => {
@@ -787,12 +820,45 @@ function canvasPoint(e) {
 }
 
 let dragging = false, dragStart = null, dragStartOffset = null;
+let resizing = null; // {mode, startP, startSize, startScaleX, cx, cy}
 previewCanvas.style.touchAction = 'none'; // để kéo chữ không bị cuộn trang chen vào
+
+/* chấm co giãn nào đang nằm dưới điểm chạm? */
+function frameHandleAt(meta, p) {
+  const fx = meta.x - 18, fy = meta.y - 14, fw = meta.w + 36, fh = meta.h + 28;
+  const pts = {
+    nw: [fx, fy], n: [fx + fw / 2, fy], ne: [fx + fw, fy],
+    w: [fx, fy + fh / 2], e: [fx + fw, fy + fh / 2],
+    sw: [fx, fy + fh], s: [fx + fw / 2, fy + fh], se: [fx + fw, fy + fh],
+  };
+  for (const k in pts) {
+    if (Math.hypot(p.x - pts[k][0], p.y - pts[k][1]) <= 34) return k;
+  }
+  return null;
+}
 
 previewCanvas.addEventListener('pointerdown', e => {
   const p = canvasPoint(e), pad = 28;
+  // 1) đang có khung chọn: chạm trúng chấm -> bắt đầu co giãn
+  if (state.textSelected) {
+    const meta = lastMetas[state.activeLayer];
+    const h = meta && frameHandleAt(meta, p);
+    if (h) {
+      resizing = {
+        mode: h, startP: p,
+        startSize: meta.size,
+        startScaleX: meta.scaleX || 1,
+        cx: meta.x + meta.w / 2,
+        cy: meta.y + meta.h / 2,
+      };
+      previewCanvas.setPointerCapture(e.pointerId);
+      $('fontMenu').style.display = 'none';
+      return;
+    }
+  }
+  // 2) chạm vào chữ -> chọn lớp + kéo di chuyển
   let hit = -1;
-  for (let i = state.layers.length - 1; i >= 0; i--) { // lớp vẽ sau nằm trên -> ưu tiên
+  for (let i = state.layers.length - 1; i >= 0; i--) {
     const r = lastMetas[i];
     if (r && p.x >= r.x - pad && p.x <= r.x + r.w + pad && p.y >= r.y - pad && p.y <= r.y + r.h + pad) {
       hit = i; break;
@@ -816,10 +882,28 @@ previewCanvas.addEventListener('pointerdown', e => {
 });
 
 previewCanvas.addEventListener('pointermove', e => {
+  const p = canvasPoint(e);
+  if (resizing) {
+    const l = state.layers[state.activeLayer];
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const fW = Math.abs(p.x - resizing.cx) / Math.max(24, Math.abs(resizing.startP.x - resizing.cx));
+    const fH = Math.abs(p.y - resizing.cy) / Math.max(24, Math.abs(resizing.startP.y - resizing.cy));
+    if (resizing.mode === 'e' || resizing.mode === 'w') {
+      // kéo cạnh ngang: ép chữ ốm lại / giãn rộng ra
+      l.scaleX = clamp(resizing.startScaleX * fW, 0.35, 1.8);
+    } else if (resizing.mode === 'n' || resizing.mode === 's') {
+      // kéo cạnh dọc: tăng/giảm chiều cao chữ
+      l.manualSize = Math.round(clamp(resizing.startSize * fH, 16, 220));
+    } else {
+      // 4 góc: phóng to/thu nhỏ size chữ theo khung
+      l.manualSize = Math.round(clamp(resizing.startSize * ((fW + fH) / 2), 16, 220));
+    }
+    refresh();
+    return;
+  }
   if (!dragging) return;
   const r = lastMetas[state.activeLayer];
   if (!r) return;
-  const p = canvasPoint(e);
   const W = previewCanvas.width, H = previewCanvas.height;
   const l = state.layers[state.activeLayer];
   let nx = dragStartOffset.x + p.x - dragStart.x;
@@ -832,7 +916,10 @@ previewCanvas.addEventListener('pointermove', e => {
 });
 
 ['pointerup', 'pointercancel'].forEach(ev =>
-  previewCanvas.addEventListener(ev, () => { dragging = false; })
+  previewCanvas.addEventListener(ev, () => {
+    if (resizing) { resizing = null; setActiveLayer(state.activeLayer); }
+    dragging = false;
+  })
 );
 
 /* ===== toolbar trên góc khung chọn: ⧉ nhân bản · Aa font · ✕ xoá ===== */
@@ -843,9 +930,9 @@ function positionToolbar() {
   const cr = previewCanvas.getBoundingClientRect();
   const wr = previewCanvas.parentElement.getBoundingClientRect();
   const scaleX = cr.width / previewCanvas.width, scaleY = cr.height / previewCanvas.height;
-  let left = (cr.left - wr.left) + (meta.x + meta.w + 18) * scaleX - 122;
+  let left = (cr.left - wr.left) + (meta.x + meta.w + 18) * scaleX - 168;
   let top = (cr.top - wr.top) + (meta.y - 14) * scaleY - 46;
-  left = Math.max(4, Math.min(left, wr.width - 130));
+  left = Math.max(4, Math.min(left, wr.width - 176));
   top = Math.max(4, top);
   tb.style.left = left + 'px';
   tb.style.top = top + 'px';
@@ -863,11 +950,16 @@ $('btnDupLayer').onclick = () => {
 };
 
 $('btnDelLayer').onclick = () => {
-  state.layers[state.activeLayer] = { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0 };
+  state.layers[state.activeLayer] = { text: '', offsetX: 0, offsetY: 0, manualSize: null, fontIdx: 0, scaleX: 1, color: '' };
   state.textSelected = false;
   syncLayerUI(); refresh();
   toast('Đã xoá Headline ' + (state.activeLayer + 1));
 };
+
+$('layerColor').addEventListener('input', e => {
+  state.layers[state.activeLayer].color = e.target.value;
+  refresh();
+});
 
 $('btnFontLayer').onclick = () => {
   const menu = $('fontMenu');
